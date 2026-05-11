@@ -83,7 +83,7 @@ st.markdown("---")
 st.header("📂  1.3  Upload Operations Excel Sheet")
 st.markdown(
     "Download the input template: "
-    "[Input_for_simulations.xlsx](https://drive.google.com/uc?export=download&id=1E3qED0b3qkmqtP9cF462BpfN_GKq0iO2)"
+    "[Input_for_simulations.xlsx](https://github.com/Frigstad-Engineering/Sim-Tool/blob/main/Input_for_simulations.xlsx)"
 )
 
 uploaded_excel = st.file_uploader("Upload your operations Excel file", type=["xlsx", "xls"])
