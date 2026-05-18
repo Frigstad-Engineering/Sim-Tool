@@ -1275,6 +1275,183 @@ def build_project_summary(no_wx_df, wx_total_df, wx_down_df, label):
                          row(net, "Net Operation", p0_perfect)])
 
 
+# ── Excel export helpers ─────────────────────────────────────────────────────
+def _sim_columns(df):
+    """Return simulation columns (Sim1, Sim2, …) in their dataframe order."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        return []
+    return [c for c in df.columns if str(c).startswith("Sim")]
+
+
+def _safe_sheet_name(name, used=None, max_len=31):
+    """Create a unique Excel-safe sheet name."""
+    used = used if used is not None else set()
+    bad = '[]:*?/\\'
+    clean = "".join("-" if ch in bad else ch for ch in str(name)).strip() or "Sheet"
+    clean = clean[:max_len]
+    candidate = clean
+    i = 1
+    while candidate in used:
+        suffix = f"_{i}"
+        candidate = clean[:max_len - len(suffix)] + suffix
+        i += 1
+    used.add(candidate)
+    return candidate
+
+
+def _step_export_summary(case_label, result_dict, phase):
+    """Build one row per simulated timeline step with key duration/downtime stats.
+
+    All duration and downtime values are in days because the simulation matrices
+    are already stored in days throughout the app.
+    """
+    total_df = result_dict.get("total")
+    downtime_df = result_dict.get("downtime")
+    no_wx_df = result_dict.get("no_wx")
+    if total_df is None or downtime_df is None:
+        return pd.DataFrame()
+
+    sim_cols = _sim_columns(total_df)
+    down_cols = [c for c in sim_cols if c in downtime_df.columns]
+
+    # Prefer the no-weather dataframe for explanatory text because some weather
+    # simulation outputs intentionally keep only compact metadata columns.
+    meta_source = no_wx_df if isinstance(no_wx_df, pd.DataFrame) else total_df
+    meta_cols = [c for c in [
+        "N", "Sequence", "Description", "Phase", "Inventory", "WTG_Left",
+        "Cycles_Left", "Parallel_Block", "Source_Sequences"
+    ] if c in meta_source.columns]
+    meta = meta_source[meta_cols].copy() if meta_cols else pd.DataFrame(index=total_df.index)
+
+    # Fill any missing columns from the total dataframe.
+    for c in ["N", "Sequence", "Inventory", "WTG_Left", "Cycles_Left"]:
+        if c not in meta.columns and c in total_df.columns:
+            meta[c] = total_df[c].values
+    if "Description" not in meta.columns:
+        meta["Description"] = ""
+
+    total_values = total_df[sim_cols].apply(pd.to_numeric, errors="coerce") if sim_cols else pd.DataFrame(index=total_df.index)
+    down_values = downtime_df[down_cols].apply(pd.to_numeric, errors="coerce") if down_cols else pd.DataFrame(index=total_df.index)
+
+    out = pd.DataFrame({
+        "Case": case_label,
+        "Phase": phase,
+        "Step_Row": np.arange(1, len(total_df) + 1),
+    })
+    for c in ["N", "Sequence", "Description", "Phase", "Inventory", "WTG_Left", "Cycles_Left",
+              "Parallel_Block", "Source_Sequences"]:
+        if c in meta.columns:
+            export_name = "Source_Phase" if c == "Phase" else c
+            out[export_name] = meta[c].values
+
+    # Per-step duration distribution across simulations.
+    if len(sim_cols) > 0:
+        out["Expected_Duration_Days"] = total_values.mean(axis=1)
+        out["Minimum_Duration_Days"] = total_values.min(axis=1)
+        out["P90_Duration_Days"] = total_values.quantile(0.90, axis=1)
+        out["Max_Duration_Days"] = total_values.max(axis=1)
+        out["Duration_Variance_Days2"] = total_values.var(axis=1, ddof=1)
+    else:
+        for c in ["Expected_Duration_Days", "Minimum_Duration_Days", "P90_Duration_Days",
+                  "Max_Duration_Days", "Duration_Variance_Days2"]:
+            out[c] = np.nan
+
+    # Per-step weather downtime distribution across simulations.
+    if len(down_cols) > 0:
+        out["Expected_Downtime_Days"] = down_values.mean(axis=1)
+        out["Downtime_Variance_Days2"] = down_values.var(axis=1, ddof=1)
+        out["P90_Downtime_Days"] = down_values.quantile(0.90, axis=1)
+        out["Max_Downtime_Days"] = down_values.max(axis=1)
+    else:
+        for c in ["Expected_Downtime_Days", "Downtime_Variance_Days2",
+                  "P90_Downtime_Days", "Max_Downtime_Days"]:
+            out[c] = np.nan
+
+    numeric_cols = out.select_dtypes(include=[np.number]).columns
+    out[numeric_cols] = out[numeric_cols].round(6)
+    return out
+
+
+def _write_case_frames(writer, case_label, result_dict, phase, used_sheets):
+    """Write all dataframes for one simulation case to the Excel workbook."""
+    step_summary = _step_export_summary(case_label, result_dict, phase)
+    if not step_summary.empty:
+        step_summary.to_excel(
+            writer,
+            sheet_name=_safe_sheet_name(f"{phase}_{case_label}_steps", used_sheets),
+            index=False,
+        )
+
+    frame_map = {
+        "summary": result_dict.get("summary"),
+        "total_by_step": result_dict.get("total"),
+        "downtime_by_step": result_dict.get("downtime"),
+        "no_weather_by_step": result_dict.get("no_wx"),
+    }
+    for suffix, df in frame_map.items():
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            df.to_excel(
+                writer,
+                sheet_name=_safe_sheet_name(f"{phase}_{case_label}_{suffix}", used_sheets),
+                index=False,
+            )
+
+
+def build_simulation_excel_export(foundation_results, wtg_weather_results,
+                                  simulate_foundations=False, intermediate_days=0):
+    """Create an in-memory Excel workbook with all simulation dataframes."""
+    output = io.BytesIO()
+    used_sheets = set()
+    all_step_summaries = []
+    all_project_summaries = []
+
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        for phase, results in [("Foundation", foundation_results), ("WTG", wtg_weather_results)]:
+            if not isinstance(results, dict):
+                continue
+            for case_label, result_dict in results.items():
+                step_summary = _step_export_summary(case_label, result_dict, phase)
+                if not step_summary.empty:
+                    all_step_summaries.append(step_summary)
+                try:
+                    all_project_summaries.append(
+                        build_project_summary(result_dict["no_wx"], result_dict["total"],
+                                              result_dict["downtime"], f"{phase}: {case_label}")
+                    )
+                except Exception:
+                    pass
+                _write_case_frames(writer, case_label, result_dict, phase, used_sheets)
+
+        if all_step_summaries:
+            pd.concat(all_step_summaries, ignore_index=True).to_excel(
+                writer, sheet_name=_safe_sheet_name("All step summaries", used_sheets), index=False
+            )
+        if all_project_summaries:
+            pd.concat(all_project_summaries, ignore_index=True).to_excel(
+                writer, sheet_name=_safe_sheet_name("Project summaries", used_sheets), index=False
+            )
+
+        export_notes = pd.DataFrame([
+            {"Field": "Expected_Duration_Days", "Meaning": "Average per-step total duration across simulations, including weather downtime."},
+            {"Field": "Minimum_Duration_Days", "Meaning": "Minimum per-step total duration across simulations."},
+            {"Field": "P90_Duration_Days", "Meaning": "90th percentile per-step total duration across simulations."},
+            {"Field": "Max_Duration_Days", "Meaning": "Maximum per-step total duration across simulations."},
+            {"Field": "Expected_Downtime_Days", "Meaning": "Average per-step weather downtime across simulations."},
+            {"Field": "Downtime_Variance_Days2", "Meaning": "Sample variance of per-step weather downtime across simulations."},
+            {"Field": "Duration_Variance_Days2", "Meaning": "Sample variance of per-step total duration across simulations."},
+            {"Field": "Intermediate_Days", "Meaning": float(intermediate_days) if simulate_foundations else 0.0},
+        ])
+        export_notes.to_excel(writer, sheet_name=_safe_sheet_name("Export notes", used_sheets), index=False)
+
+        # Basic formatting for readability.
+        for sheet in writer.sheets.values():
+            sheet.freeze_panes(1, 0)
+            sheet.autofilter(0, 0, 0, 0)
+
+    output.seek(0)
+    return output.getvalue()
+
+
 # A simple, stable color mapping per vessel family + linestyle per loading mode
 _VESSEL_COLORS = {"W90": "red", "JUV": "blue", "FIV": "orange"}
 _MODE_STYLES   = {"Yard": "-", "Nearshore": ":", "Offshore": "--"}
@@ -1677,10 +1854,6 @@ else:
                                           title="Full Campaign P50 (Foundation + intermediate + WTG)"))
             st.dataframe(pd.DataFrame(comb_rows).set_index("Case"))
 
-        st.success("🎉  All simulations complete!")
-
-
-
 
         st.subheader("⬇️  Download Simulation Data")
         export_bytes = build_simulation_excel_export(
@@ -1699,7 +1872,6 @@ else:
         )
 
         st.success("🎉  All simulations complete!")
-
 
 
 # ═════════════════════════════════════════════════════════════════════════════
