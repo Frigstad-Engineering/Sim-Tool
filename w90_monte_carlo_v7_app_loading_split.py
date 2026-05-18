@@ -1680,6 +1680,28 @@ else:
         st.success("🎉  All simulations complete!")
 
 
+
+
+        st.subheader("⬇️  Download Simulation Data")
+        export_bytes = build_simulation_excel_export(
+            foundation_results=foundation_results,
+            wtg_weather_results=wtg_weather_results,
+            simulate_foundations=simulate_foundations,
+            intermediate_days=intermediate_days,
+        )
+        st.download_button(
+            label="Download all simulation data as Excel",
+            data=export_bytes,
+            file_name=f"w90_simulation_export_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help=("Includes one row per simulated sequence step with description, expected duration, "
+                  "minimum, P90, max, expected downtime, and variance, plus the raw simulation dataframes."),
+        )
+
+        st.success("🎉  All simulations complete!")
+
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  FOOTER
 # ═════════════════════════════════════════════════════════════════════════════
