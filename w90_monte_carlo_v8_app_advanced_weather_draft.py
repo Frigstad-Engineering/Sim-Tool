@@ -2057,11 +2057,9 @@ def render_advanced_weather_intelligence(excel_bytes, wtg_weather_results,
                                          df_project_weather, df_barge_weather, df_yard_wind,
                                          lat, lon, lat_barge, lon_barge, lat_yard, lon_yard):
     """Render post-simulation heatmaps, replay, and API concept note."""
-    st.markdown("---")
-    st.header("🌐 Advanced Weather Intelligence")
     st.caption(
-        "Draft module: uses the uploaded Excel operation limits plus loaded ERA5 weather. "
-        "The live MetOcean API concept is explained here but not connected yet."
+        "Standalone insight module: reads the latest saved simulation results from session state, "
+        "so you can inspect heatmaps and replay without re-running the full simulation."
     )
 
     tab_heat, tab_replay, tab_api = st.tabs([
@@ -2555,16 +2553,19 @@ else:
             st.dataframe(pd.DataFrame(comb_rows).set_index("Case"))
 
 
-        render_advanced_weather_intelligence(
-            excel_bytes=excel_bytes,
-            wtg_weather_results=wtg_weather_results,
-            df_project_weather=df_project_weather,
-            df_barge_weather=df_barge_weather,
-            df_yard_wind=df_yard_wind,
-            lat=lat, lon=lon,
-            lat_barge=lat_barge, lon_barge=lon_barge,
-            lat_yard=lat_yard, lon_yard=lon_yard,
-        )
+        # Save the latest completed run so Expanded Insights can be inspected
+        # independently without being tied to the Run All Simulations button state.
+        st.session_state["expanded_insights_payload"] = {
+            "excel_bytes": excel_bytes,
+            "wtg_weather_results": wtg_weather_results,
+            "df_project_weather": df_project_weather,
+            "df_barge_weather": df_barge_weather,
+            "df_yard_wind": df_yard_wind,
+            "lat": lat, "lon": lon,
+            "lat_barge": lat_barge, "lon_barge": lon_barge,
+            "lat_yard": lat_yard, "lon_yard": lon_yard,
+            "created_at": pd.Timestamp.now(),
+        }
 
         st.subheader("⬇️  Download Simulation Data")
         export_bytes = build_simulation_excel_export(
@@ -2595,3 +2596,37 @@ st.caption(
     "weather routing, coordinate-gated loading modes, and the new per-turbine "
     "parallel-loading W90 model."
 )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  SECTION 6 – EXPANDED INSIGHTS (STANDALONE)
+# ═════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+st.header("🔎 6. Expanded Insights")
+st.caption(
+    "This section is separated from the main simulation output. It uses the most recent completed "
+    "simulation saved in Streamlit session state, so changing sliders, tabs, and replay controls should "
+    "not force you to re-run the full model."
+)
+
+_payload = st.session_state.get("expanded_insights_payload")
+if not _payload:
+    st.info("Run the main simulation once. When it completes, the expanded insight tools will appear here and remain inspectable during normal Streamlit reruns.")
+else:
+    created_at = _payload.get("created_at")
+    if created_at is not None:
+        st.success(f"Using latest saved simulation run from {created_at.strftime('%Y-%m-%d %H:%M:%S')}.")
+    if st.button("Clear saved Expanded Insights", key="clear_expanded_insights"):
+        st.session_state.pop("expanded_insights_payload", None)
+        st.rerun()
+
+    render_advanced_weather_intelligence(
+        excel_bytes=_payload.get("excel_bytes"),
+        wtg_weather_results=_payload.get("wtg_weather_results", {}),
+        df_project_weather=_payload.get("df_project_weather"),
+        df_barge_weather=_payload.get("df_barge_weather"),
+        df_yard_wind=_payload.get("df_yard_wind"),
+        lat=_payload.get("lat", 0.0), lon=_payload.get("lon", 0.0),
+        lat_barge=_payload.get("lat_barge", 0.0), lon_barge=_payload.get("lon_barge", 0.0),
+        lat_yard=_payload.get("lat_yard", 0.0), lon_yard=_payload.get("lon_yard", 0.0),
+    )
