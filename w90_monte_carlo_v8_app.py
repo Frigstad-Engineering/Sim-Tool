@@ -58,6 +58,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 try:
+    import folium
+    from streamlit_folium import st_folium
+except ImportError:
+    folium = None
+    st_folium = None
+
+try:
     import cdsapi
 except ImportError:
     cdsapi = None
@@ -68,6 +75,117 @@ except ImportError:
 st.set_page_config(page_title="W90 Monte Carlo v8", page_icon="🌊", layout="wide")
 st.title("🌊 W90 Monte Carlo – Offshore Wind Installation Simulator  ·  v8")
 st.markdown("---")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  MAP-BASED COORDINATE PICKER HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def _round_to_era5_grid(value):
+    """Round latitude/longitude to the nearest ERA5 0.25° grid point."""
+    return round(float(value) * 4) / 4
+
+
+def _safe_rerun():
+    """Rerun Streamlit after a map click so number inputs update immediately."""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
+def coordinate_picker(label, default_lat, default_lon, key):
+    """Show manual coordinate fields plus an optional click-to-select Folium map.
+
+    The map is hidden by default. Pressing the Select coordinates button opens it
+    for that specific location. A map click updates the latitude/longitude and
+    rounds both values to the ERA5 0.25° grid used by the weather download.
+    """
+    lat_state_key = f"{key}_lat"
+    lon_state_key = f"{key}_lon"
+    show_map_key = f"{key}_show_map"
+
+    if lat_state_key not in st.session_state:
+        st.session_state[lat_state_key] = float(default_lat)
+    if lon_state_key not in st.session_state:
+        st.session_state[lon_state_key] = float(default_lon)
+    if show_map_key not in st.session_state:
+        st.session_state[show_map_key] = False
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        st.session_state[lat_state_key] = st.number_input(
+            f"{label} Latitude",
+            value=float(st.session_state[lat_state_key]),
+            step=0.25,
+            format="%.2f",
+            key=f"{key}_lat_input",
+        )
+    with c2:
+        st.session_state[lon_state_key] = st.number_input(
+            f"{label} Longitude",
+            value=float(st.session_state[lon_state_key]),
+            step=0.25,
+            format="%.2f",
+            key=f"{key}_lon_input",
+        )
+    with c3:
+        st.write("")
+        if st.button("🗺️ Select coordinates", key=f"{key}_select_btn"):
+            st.session_state[show_map_key] = not st.session_state[show_map_key]
+
+    if st.session_state[show_map_key]:
+        if folium is None or st_folium is None:
+            st.error(
+                "Map selector requires the packages `folium` and `streamlit-folium`. "
+                "Install them, then restart the app."
+            )
+        else:
+            current_lat = float(st.session_state[lat_state_key])
+            current_lon = float(st.session_state[lon_state_key])
+            is_zero_sentinel = abs(current_lat) < 1e-9 and abs(current_lon) < 1e-9
+
+            m = folium.Map(
+                location=[current_lat, current_lon],
+                zoom_start=2 if is_zero_sentinel else 5,
+            )
+            if not is_zero_sentinel:
+                folium.Marker(
+                    [current_lat, current_lon],
+                    tooltip=f"Current {label} location",
+                ).add_to(m)
+
+            st.caption("Click anywhere on the map to select a new coordinate. The value will be rounded to the nearest ERA5 0.25° grid point.")
+
+            # Explicitly ask streamlit-folium to return map-click events.
+            # This is more reliable than relying on the component's default returned objects,
+            # especially across different streamlit-folium versions.
+            result = st_folium(
+                m,
+                height=350,
+                use_container_width=True,
+                key=f"{key}_map",
+                returned_objects=["last_clicked"],
+            )
+            clicked = result.get("last_clicked") if result else None
+
+            if clicked is not None:
+                new_lat = _round_to_era5_grid(clicked["lat"])
+                new_lon = _round_to_era5_grid(clicked["lng"])
+
+                # Only update/rerun when the clicked location actually changes the selected grid point.
+                if (
+                    abs(new_lat - st.session_state[lat_state_key]) > 1e-9
+                    or abs(new_lon - st.session_state[lon_state_key]) > 1e-9
+                ):
+                    st.session_state[lat_state_key] = new_lat
+                    st.session_state[lon_state_key] = new_lon
+                    st.toast(
+                        f"{label} coordinates selected: {new_lat:.2f}, {new_lon:.2f}",
+                        icon="🗺️",
+                    )
+                    _safe_rerun()
+
+    return st.session_state[lat_state_key], st.session_state[lon_state_key]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -84,12 +202,9 @@ with st.expander("⚙️  1. Project Inputs", expanded=True):
         API_key        = st.text_input("ERA5 API key", value="", type="password")
     with col2:
         st.subheader("Locations (ERA5 0.25° grid)")
-        lat       = st.number_input("Project Latitude",  value=35.25,  step=0.25, format="%.2f")
-        lon       = st.number_input("Project Longitude", value=140.75, step=0.25, format="%.2f")
-        lat_barge = st.number_input("Barge Latitude",    value=56.50,  step=0.25, format="%.2f")
-        lon_barge = st.number_input("Barge Longitude",   value=-2.50,  step=0.25, format="%.2f")
-        lat_yard  = st.number_input("Yard Latitude",     value=0.0,    step=0.25, format="%.2f")
-        lon_yard  = st.number_input("Yard Longitude",    value=0.0,    step=0.25, format="%.2f")
+        lat, lon = coordinate_picker("Project", 35.25, 140.75, "project")
+        lat_barge, lon_barge = coordinate_picker("Barge", 56.50, -2.50, "barge")
+        lat_yard, lon_yard = coordinate_picker("Yard", 0.0, 0.0, "yard")
         st.caption(
             "Project & Barge now both download **wind + waves**.  "
             "Yard downloads **wind only**.  Leave Yard at 0.00 / 0.00 if you "
