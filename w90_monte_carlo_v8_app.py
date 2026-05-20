@@ -96,9 +96,10 @@ def _safe_rerun():
 def coordinate_picker(label, default_lat, default_lon, key):
     """Show manual coordinate fields plus an optional click-to-select Folium map.
 
-    The map is hidden by default. Pressing the Select coordinates button opens it
-    for that specific location. A map click updates the latitude/longitude and
-    rounds both values to the ERA5 0.25° grid used by the weather download.
+    Important implementation detail:
+    The number_input widgets use the SAME keys that the map click updates.
+    If the map writes to separate session-state keys, the internal widget state
+    can keep showing the old values even after a click.
     """
     lat_state_key = f"{key}_lat"
     lon_state_key = f"{key}_lon"
@@ -113,20 +114,18 @@ def coordinate_picker(label, default_lat, default_lon, key):
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
-        st.session_state[lat_state_key] = st.number_input(
+        st.number_input(
             f"{label} Latitude",
-            value=float(st.session_state[lat_state_key]),
             step=0.25,
             format="%.2f",
-            key=f"{key}_lat_input",
+            key=lat_state_key,
         )
     with c2:
-        st.session_state[lon_state_key] = st.number_input(
+        st.number_input(
             f"{label} Longitude",
-            value=float(st.session_state[lon_state_key]),
             step=0.25,
             format="%.2f",
-            key=f"{key}_lon_input",
+            key=lon_state_key,
         )
     with c3:
         st.write("")
@@ -154,11 +153,11 @@ def coordinate_picker(label, default_lat, default_lon, key):
                     tooltip=f"Current {label} location",
                 ).add_to(m)
 
-            st.caption("Click anywhere on the map to select a new coordinate. The value will be rounded to the nearest ERA5 0.25° grid point.")
+            st.caption(
+                "Click anywhere on the map to select a new coordinate. "
+                "The value will be rounded to the nearest ERA5 0.25° grid point."
+            )
 
-            # Explicitly ask streamlit-folium to return map-click events.
-            # This is more reliable than relying on the component's default returned objects,
-            # especially across different streamlit-folium versions.
             result = st_folium(
                 m,
                 height=350,
@@ -168,24 +167,35 @@ def coordinate_picker(label, default_lat, default_lon, key):
             )
             clicked = result.get("last_clicked") if result else None
 
-            if clicked is not None:
-                new_lat = _round_to_era5_grid(clicked["lat"])
-                new_lon = _round_to_era5_grid(clicked["lng"])
+            # Debug/status line: useful while verifying that the browser click
+            # is actually reaching Streamlit.
+            if clicked is None:
+                st.caption("No map click registered yet for this location.")
+            else:
+                raw_lat = float(clicked["lat"])
+                raw_lon = float(clicked["lng"])
+                new_lat = _round_to_era5_grid(raw_lat)
+                new_lon = _round_to_era5_grid(raw_lon)
+                st.caption(
+                    f"Last map click: {raw_lat:.5f}, {raw_lon:.5f} → "
+                    f"ERA5 grid: {new_lat:.2f}, {new_lon:.2f}"
+                )
 
-                # Only update/rerun when the clicked location actually changes the selected grid point.
                 if (
-                    abs(new_lat - st.session_state[lat_state_key]) > 1e-9
-                    or abs(new_lon - st.session_state[lon_state_key]) > 1e-9
+                    abs(new_lat - float(st.session_state[lat_state_key])) > 1e-9
+                    or abs(new_lon - float(st.session_state[lon_state_key])) > 1e-9
                 ):
-                    st.session_state[lat_state_key] = new_lat
-                    st.session_state[lon_state_key] = new_lon
+                    # These are the same keys used by the number_input widgets above.
+                    # On rerun, the input boxes will display these new values.
+                    st.session_state[lat_state_key] = float(new_lat)
+                    st.session_state[lon_state_key] = float(new_lon)
                     st.toast(
                         f"{label} coordinates selected: {new_lat:.2f}, {new_lon:.2f}",
                         icon="🗺️",
                     )
                     _safe_rerun()
 
-    return st.session_state[lat_state_key], st.session_state[lon_state_key]
+    return float(st.session_state[lat_state_key]), float(st.session_state[lon_state_key])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
